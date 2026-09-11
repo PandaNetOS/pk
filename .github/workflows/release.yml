@@ -17,11 +17,7 @@ jobs:
     with:
       binary_name: pk
       project_name: PK
-      dispatch_downstream: true
-      downstream_repo: pcdn-keeper
       version: ${{ inputs.version }}
-    secrets:
-      PAT_FOR_DOWNSTREAM: ${{ secrets.PAT_FOR_PCDNKEEPER }}
 
   # 发版后即时通知 pnos-store 同步清单里的版本号（尽力而为：
   # token 缺失或无权限都不应让发版失败；pnos-store 的每日 cron 会兜底）。
@@ -32,11 +28,11 @@ jobs:
     steps:
       - name: 触发 pnos-store 版本同步
         env:
-          TOKEN: ${{ secrets.PAT_FOR_PCDNKEEPER }}
+          TOKEN: ${{ secrets.PNOS_DISPATCH_TOKEN }}
           VERSION: ${{ inputs.version }}
         run: |
           if [ -z "$TOKEN" ]; then
-            echo "未配置 PAT_FOR_PCDNKEEPER，跳过；pnos-store 每日 cron 会自动兜底同步"
+            echo "未配置 PNOS_DISPATCH_TOKEN，跳过；pnos-store 每日 cron 会自动兜底同步"
             exit 0
           fi
           code=$(curl -sS -o /tmp/resp.txt -w '%{http_code}' -X POST \
