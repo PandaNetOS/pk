@@ -144,12 +144,18 @@ pub fn build_capability_manifest() -> Value {
                 {"method": "GET", "path": "/realtime/ws", "description": "WebSocket 实时推送"},
             ],
         },
+        "health": {
+            "live": "/health/live",
+            "ready": "/health/ready",
+            "compat": "/health",
+            "description": "ready 依赖 pnos-runtime 注册状态；独立模式返回 503",
+        },
         "communication": {
             "protocols": ["HTTP/1.1", "WebSocket"],
             "data_format": "JSON",
-            "auth": "Bearer Token (可选)",
+            "auth": "X-Pnos-Token 请求头（配置 token 后管理面启用；节点面/健康检查/静态资源白名单放行；token 为空=开发模式全放行）",
             "agent_heartbeat_interval": "5s (spde 端默认)",
-            "realtime_push": "WebSocket，节点状态/任务进度/速度实时推送",
+            "realtime_push": "WebSocket /api/v1/realtime/ws，双格式过渡：旧 {type:\"realtime\"} + 新 WsMessage 信封 event_type=pk.realtime",
             "node_deleted_notification": "WebSocket 事件 node.deleted（WsMessage 信封），删除节点时主动通知 spde",
         },
         "node_status_fields": [

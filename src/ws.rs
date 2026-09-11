@@ -755,6 +755,21 @@ impl FrontendWsManager {
         }
     }
 
+    /// 以 pnos WsMessage 信封广播（pnos-web Vue 模块消费格式，event_type = pk.realtime）
+    pub async fn broadcast_ws(&self, msg: &WsMessage) {
+        let text = match serde_json::to_string(msg) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!("[frontend-ws] 序列化 WsMessage 失败: {}", e);
+                return;
+            }
+        };
+        let conns = self.conns.read().await;
+        for tx in conns.values() {
+            let _ = tx.send(Message::Text(text.clone().into()));
+        }
+    }
+
     pub async fn conn_count(&self) -> usize {
         self.conns.read().await.len()
     }
@@ -921,12 +936,25 @@ pub fn spawn_realtime_broadcaster(state: Arc<AppState>) {
                 )
                 .collect();
 
-            let msg = FrontendPushMsg::Realtime {
-                nodes: frontend_nodes,
-                timestamp: Utc::now().to_rfc3339(),
-            };
-
-            state.frontend_ws_mgr.broadcast(&msg).await;
+            // 过渡期双格式广播：
+            // - 旧格式 {type:"realtime", ...}：pk 自带 web UI 消费（阶段3退役）
+            // - 新格式 WsMessage{event_type:"pk.realtime"}：pnos-web Vue 模块消费
+            let timestamp = Utc::now().to_rfc3339();
+            let nodes_val = serde_json::to_value(&frontend_nodes).unwrap_or_default();
+            state
+                .frontend_ws_mgr
+                .broadcast(&FrontendPushMsg::Realtime {
+                    nodes: frontend_nodes,
+                    timestamp: timestamp.clone(),
+                })
+                .await;
+            state
+                .frontend_ws_mgr
+                .broadcast_ws(&WsMessage::new(
+                    "pk.realtime",
+                    serde_json::json!({ "nodes": nodes_val, "timestamp": timestamp }),
+                ))
+                .await;
         }
     });
 }

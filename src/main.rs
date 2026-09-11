@@ -98,7 +98,7 @@ async fn shutdown(state: Arc<AppState>) {
     // 若把 app.shutdown() 放在前面，会导致 pk 一注册就立刻注销。
     let _ = tokio::signal::ctrl_c().await;
     tracing::info!("shutdown signal");
-    if let Some(app) = &*state.pk_app.read().await {
+    if let Some(app) = state.pk_app.write().await.take() {
         app.shutdown().await;
     }
 }

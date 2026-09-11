@@ -59,18 +59,42 @@ impl From<anyhow::Error> for AppError {
 
 pub type ApiResult<T> = Result<Json<ApiResponse<T>>, AppError>;
 
-// ── 鉴权中间件 ────────────────────────────────────────────
+// ── 鉴权（axum 中间件统一接管，见 auth.rs） ──
 
-pub fn check_auth(state: &AppState, token: Option<&str>) -> Result<(), AppError> {
-    if !state.cfg.token.is_empty() {
-        match token {
-            Some(t) if t == state.cfg.token => {}
-            _ => {
-                return Err(AppError::new(ErrorCode::Unauthorized, "未授权"));
-            }
-        }
+// ── 健康检查（pnos-comm AppServer 同语义） ────────────────
+
+/// 存活探针（总是 200）
+async fn health_live() -> impl IntoResponse {
+    (StatusCode::OK, Json(serde_json::json!({"status": "alive"})))
+}
+
+/// 就绪探针：runtime 注册成功才 200，独立模式 503
+async fn health_ready(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let ready = state.pk_app.read().await.is_some();
+    if ready {
+        (StatusCode::OK, Json(serde_json::json!({"status": "ready"})))
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "status": "not_ready",
+                "reason": "runtime not connected",
+            })),
+        )
     }
-    Ok(())
+}
+
+/// /health 兼容旧路径：存活 + 版本 + runtime 注册状态
+async fn health_overview(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let runtime_registered = state.pk_app.read().await.is_some();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "alive",
+            "version": env!("CARGO_PKG_VERSION"),
+            "runtime_registered": runtime_registered,
+        })),
+    )
 }
 
 // ── 节点管理 ──────────────────────────────────────────────
@@ -1352,6 +1376,15 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         // 二进制分发
         .route("/api/v1/artifacts", get(list_artifacts))
         .route("/api/v1/artifacts/{platform}", get(serve_artifact))
+        // 健康检查（/health 为 runtime 健康探测的默认路径）
+        .route("/health", get(health_overview))
+        .route("/health/live", get(health_live))
+        .route("/health/ready", get(health_ready))
+        // 管理面认证：X-Pnos-Token 校验，节点面/健康检查/静态资源白名单放行
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::auth_middleware,
+        ))
         .with_state(state)
 }
 
