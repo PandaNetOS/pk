@@ -1463,6 +1463,7 @@ dependencies = [
 [[package]]
 name = "pnos-comm"
 version = "1.0.0"
+source = "git+https://github.com/PandaNetOS/pnos-sdk.git?branch=main#698420395352d739d264c476a784db5119dfc4f2"
 dependencies = [
  "anyhow",
  "axum 0.7.9",

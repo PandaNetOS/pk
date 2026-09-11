@@ -37,9 +37,3 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
-
-# 本地开发：用本地修复版 pnos-comm 覆盖 git 源
-# （修复 heartbeat/unregister 误用 config.app_id 导致 runtime 找不到组件、组件被标 offline 的 bug）
-# 上游 pnos-sdk 合入该修复后，可删除本段恢复纯 git 依赖
-[patch."https://github.com/PandaNetOS/pnos-sdk.git"]
-pnos-comm = { path = "../pnos-sdk/crates/pnos-comm" }
