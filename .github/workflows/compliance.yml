@@ -15,9 +15,9 @@ jobs:
       - name: Checkout 本项目
         uses: actions/checkout@v4
 
-      - name: Checkout PandaNetOS 标准规范仓（合规脚本来源）
+      - name: Checkout pnos 标准库仓（合规脚本来源）
         run: |
-          git clone --depth 1 https://github.com/PandaNetOS/PandaNetOS.git ../PandaNetOS
+          git clone --depth 1 https://github.com/PandaNetOS/pnos-spec.git ../pnos-spec
 
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
@@ -29,10 +29,9 @@ jobs:
         with:
           workspaces: |
             .
-            ../PandaNetOS
 
-      - name: 运行 PandaNetOS 合规检查
-        run: bash ../PandaNetOS/scripts/check_compliance.sh .
+      - name: 运行 pnos 生态合规检查
+        run: bash ../pnos-spec/scripts/check_compliance.sh .
 
       - name: 上传检查日志（失败时）
         if: failure()

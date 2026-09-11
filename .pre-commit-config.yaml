@@ -18,8 +18,8 @@ repos:
   - repo: local
     hooks:
       - id: pnos-compliance
-        name: PandaNetOS 合规检查（标准库依赖 / README规范 / 敏感信息）
-        entry: bash ../PandaNetOS/scripts/check_compliance.sh .
+        name: pnos 生态合规检查（标准库依赖 / README规范 / 敏感信息）
+        entry: bash ../pnos-spec/scripts/check_compliance.sh .
         language: system
         pass_filenames: false
         stages: [commit]
