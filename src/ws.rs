@@ -6,13 +6,142 @@ use axum::extract::{Query, State, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
-pub use pandanetos::protocol::{ClientMsg, ServerMsg};
+use pnos::events::{
+    WsMessage, EVENT_COMPONENT_REGISTERED, EVENT_CONFIG_CHANGED, EVENT_DISCOVERY_RESULT,
+    EVENT_DISCOVERY_STARTED, EVENT_NODE_DELETED, EVENT_NODE_STATUS, EVENT_SERVICE_CHANGED,
+    EVENT_TASK_COMPLETED, EVENT_TASK_FAILED, EVENT_TASK_NEW, EVENT_TASK_PROGRESS,
+};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
+
+// ── SPDE 控制面事件（pnos 信封之上的自定义 event_type）──────
+//
+// pnos 标准库只定义了「事件总线」语义的事件类型（task.* / node.* / component.* …）。
+// pk ↔ spde 之间还有一组「控制面」消息（状态上报、任务进度、心跳、保活等），
+// pnos 未对其建模；pk 统一以 pnos 的 WsMessage 信封承载，并在此定义 event_type。
+
+/// 保活 ping（pk → spde）
+pub const EVENT_PING: &str = "system.ping";
+/// 保活 pong（spde → pk）
+pub const EVENT_PONG: &str = "system.pong";
+/// 节点心跳（spde → pk）
+pub const EVENT_NODE_HEARTBEAT: &str = "node.heartbeat";
+/// 任务开始（spde → pk）
+pub const EVENT_TASK_STARTED: &str = "task.started";
+
+/// 节点状态上报载荷（event_type = node.status）
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StatusPayload {
+    #[serde(default)]
+    pub active_tasks: u32,
+    #[serde(default)]
+    pub bytes_downloaded: u64,
+    #[serde(default)]
+    pub busy: bool,
+    #[serde(default)]
+    pub total_speed_bps: u64,
+    #[serde(default)]
+    pub last_error: Option<String>,
+}
+
+/// 任务开始载荷（event_type = task.started）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskStartedPayload {
+    pub dispatch_id: Uuid,
+}
+
+/// 任务进度载荷（event_type = task.progress）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskProgressMsg {
+    pub dispatch_id: Uuid,
+    pub task_name: String,
+    pub percent: f64,
+    pub downloaded_bytes: u64,
+    pub total_size: u64,
+    pub speed_bps: u64,
+    pub active_connections: u32,
+    pub elapsed_secs: f64,
+}
+
+/// 任务完成/失败报告载荷（event_type = task.completed / task.failed）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskReportMsg {
+    #[serde(default)]
+    pub dispatch_id: Option<Uuid>,
+    #[serde(default)]
+    pub task_id: Option<Uuid>,
+    #[serde(default)]
+    pub task_name: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub filename: String,
+    #[serde(default)]
+    pub file_size: u64,
+    #[serde(default)]
+    pub downloaded_bytes: u64,
+    #[serde(default)]
+    pub elapsed_secs: f64,
+    #[serde(default)]
+    pub avg_speed_mbps: f64,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub success_chunks: u64,
+    #[serde(default)]
+    pub failed_chunks: u64,
+    #[serde(default)]
+    pub error_msg: Option<String>,
+}
+
+/// WS 内注册载荷（event_type = component.registered）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterPayload {
+    pub node_id: Uuid,
+    pub hostname: String,
+    #[serde(default)]
+    pub platform: String,
+    #[serde(default)]
+    pub arch: String,
+    #[serde(default)]
+    pub version: String,
+}
+
+/// 节点心跳载荷（event_type = node.heartbeat）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeartbeatPayload {
+    pub node_id: Uuid,
+    #[serde(default)]
+    pub active_tasks: u32,
+    #[serde(default)]
+    pub bytes_downloaded: u64,
+}
+
+/// 发现启动载荷（event_type = discovery.started）
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DiscoveryStartedMsg {
+    #[serde(default)]
+    pub task_id: String,
+    #[serde(default)]
+    pub infohash: String,
+}
+
+/// 发现结果载荷（event_type = discovery.result）
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DiscoveryResultMsg {
+    #[serde(default)]
+    pub task_id: String,
+    #[serde(default)]
+    pub infohash: String,
+    #[serde(default)]
+    pub peers_count: u32,
+    #[serde(default)]
+    pub success: bool,
+}
 
 // ── 连接管理 + 实时状态 ───────────────────────────────────
 pub struct NodeConn {
@@ -84,7 +213,7 @@ impl WsManager {
     }
 
     /// 向所有已绑定节点的连接广播消息
-    pub async fn broadcast(&self, msg: &ServerMsg) {
+    pub async fn broadcast(&self, msg: &WsMessage) {
         let text = serde_json::to_string(msg).unwrap_or_default();
         let conns = self.conns.read().await;
         for c in conns.values() {
@@ -95,7 +224,7 @@ impl WsManager {
     }
 
     /// 向特定节点发送消息（用于删除节点时主动通知 spde）
-    pub async fn send_to_node(&self, node_id: Uuid, msg: &ServerMsg) {
+    pub async fn send_to_node(&self, node_id: Uuid, msg: &WsMessage) {
         let text = serde_json::to_string(msg).unwrap_or_default();
         let conns = self.conns.read().await;
         for c in conns.values() {
@@ -154,11 +283,23 @@ impl WsManager {
 
 // ── 通知函数 ──────────────────────────────────────────────
 pub async fn notify_config_changed(state: &Arc<AppState>) {
-    state.ws_mgr.broadcast(&ServerMsg::ConfigChanged).await;
+    let msg = WsMessage::new(EVENT_CONFIG_CHANGED, serde_json::json!({})).with_source("pk");
+    state.ws_mgr.broadcast(&msg).await;
 }
 
 pub async fn notify_new_task(state: &Arc<AppState>) {
-    state.ws_mgr.broadcast(&ServerMsg::NewTask).await;
+    let msg = WsMessage::new(EVENT_TASK_NEW, serde_json::json!({})).with_source("pk");
+    state.ws_mgr.broadcast(&msg).await;
+}
+
+/// 通知指定节点：该节点已被删除（主动通知 spde 暂停任务并重新注册）
+pub async fn notify_node_deleted(state: &Arc<AppState>, node_id: Uuid) {
+    let msg = WsMessage::new(
+        EVENT_NODE_DELETED,
+        serde_json::json!({ "node_id": node_id }),
+    )
+    .with_source("pk");
+    state.ws_mgr.send_to_node(node_id, &msg).await;
 }
 
 /// 通知所有节点：服务注册中心有变更（Agent 上下线/能力更新）
@@ -166,17 +307,19 @@ pub async fn notify_service_changed(
     state: &Arc<AppState>,
     event: &crate::models::ServiceChangedEvent,
 ) {
-    let msg = ServerMsg::ServiceChanged {
-        agent_id: event.agent_id,
-        change_type: event.change_type.clone(),
-        agent_type: event.agent_type.clone(),
-        capabilities: event.capabilities.clone(),
-        host: event.host.clone(),
-        port: event.port,
-        region: event.region.clone(),
-        health: event.health.clone(),
-        load: event.load,
-    };
+    let payload = serde_json::json!({
+        "service_name": event.agent_id.clone(),
+        "action": event.change_type.clone(),
+        "address": event.host.clone(),
+        "port": event.port,
+        "healthy": event.health == "healthy",
+        "agent_type": event.agent_type.clone(),
+        "capabilities": event.capabilities.clone(),
+        "region": event.region.clone(),
+        "health": event.health.clone(),
+        "load": event.load,
+    });
+    let msg = WsMessage::new(EVENT_SERVICE_CHANGED, payload).with_source("pk");
     state.ws_mgr.broadcast(&msg).await;
 }
 
@@ -226,7 +369,8 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, initial_node_id:
         loop {
             tokio::select! {
                 _ = ping.tick() => {
-                    let text = serde_json::to_string(&ServerMsg::Ping).unwrap_or_default();
+                    let msg = WsMessage::new(EVENT_PING, serde_json::json!({})).with_source("pk");
+                    let text = serde_json::to_string(&msg).unwrap_or_default();
                     if sender.send(Message::Text(text.into())).await.is_err() {
                         break;
                     }
@@ -266,18 +410,16 @@ async fn handle_client_msg(
     node_id: Option<Uuid>,
     text: &str,
 ) -> anyhow::Result<()> {
-    let msg: ClientMsg = serde_json::from_str(text)?;
-    match msg {
-        // ── 新协议：节点状态上报 ──
-        ClientMsg::Status {
-            active_tasks,
-            bytes_downloaded,
-            busy: _,
-            total_speed_bps,
-            last_error: _,
-        } => {
+    let msg: WsMessage = serde_json::from_str(text)?;
+    match msg.event_type.as_str() {
+        // ── 节点状态上报 ──
+        EVENT_NODE_STATUS => {
+            let p: StatusPayload = msg.parse_payload().unwrap_or_default();
             if let Some(nid) = node_id {
                 let now = Utc::now();
+                let (active_tasks, bytes_downloaded) =
+                    (p.active_tasks as i64, p.bytes_downloaded as i64);
+                let total_speed_bps = p.total_speed_bps;
                 state
                     .with_transaction(move |conn| {
                         conn.execute(
@@ -292,79 +434,58 @@ async fn handle_client_msg(
             }
         }
 
-        // ── 新协议：任务开始 ──
-        ClientMsg::TaskStarted { dispatch_id } => {
-            state
-                .with_transaction(move |conn| {
-                    scheduler::mark_running(conn, dispatch_id)?;
-                    Ok(())
-                })
-                .await?;
+        // ── 任务开始 ──
+        EVENT_TASK_STARTED => {
+            if let Ok(p) = msg.parse_payload::<TaskStartedPayload>() {
+                state
+                    .with_transaction(move |conn| {
+                        scheduler::mark_running(conn, p.dispatch_id)?;
+                        Ok(())
+                    })
+                    .await?;
+            }
         }
 
-        // ── 新协议：任务实时进度 ──
-        ClientMsg::TaskProgress {
-            dispatch_id,
-            task_name,
-            percent,
-            downloaded_bytes,
-            total_size,
-            speed_bps,
-            active_connections,
-            elapsed_secs,
-        } => {
-            if let Some(nid) = node_id {
+        // ── 任务实时进度 ──
+        EVENT_TASK_PROGRESS => {
+            if let (Some(nid), Ok(p)) = (node_id, msg.parse_payload::<TaskProgressMsg>()) {
                 let progress = TaskProgressState {
-                    dispatch_id,
-                    task_name,
-                    percent,
-                    downloaded_bytes,
-                    total_size,
-                    speed_bps,
-                    active_connections,
-                    elapsed_secs,
+                    dispatch_id: p.dispatch_id,
+                    task_name: p.task_name,
+                    percent: p.percent,
+                    downloaded_bytes: p.downloaded_bytes,
+                    total_size: p.total_size,
+                    speed_bps: p.speed_bps,
+                    active_connections: p.active_connections,
+                    elapsed_secs: p.elapsed_secs,
                     updated_at: Utc::now().to_rfc3339(),
                 };
                 state.ws_mgr.update_task_progress(nid, progress).await;
             }
         }
 
-        // ── 新协议：任务完成报告 ──
-        ClientMsg::TaskReport {
-            dispatch_id,
-            task_id,
-            task_name,
-            url,
-            filename,
-            file_size,
-            downloaded_bytes,
-            elapsed_secs,
-            avg_speed_mbps,
-            status,
-            success_chunks,
-            failed_chunks,
-            error_msg,
-        } => {
-            if let Some(nid) = node_id {
+        // ── 任务完成 / 失败报告 ──
+        EVENT_TASK_COMPLETED | EVENT_TASK_FAILED => {
+            if let (Some(nid), Ok(p)) = (node_id, msg.parse_payload::<TaskReportMsg>()) {
                 // 任务完成，从实时状态中移除
-                if let Some(did) = dispatch_id {
+                if let Some(did) = p.dispatch_id {
                     state.ws_mgr.remove_task_progress(nid, did).await;
                 }
                 let req = AgentReportReq {
                     node_id: nid,
-                    dispatch_id,
-                    task_id,
-                    task_name,
-                    url,
-                    filename,
-                    file_size,
-                    downloaded_bytes,
-                    elapsed_secs,
-                    avg_speed_mbps,
-                    status,
-                    success_chunks,
-                    failed_chunks,
-                    error_msg,
+                    dispatch_id: p.dispatch_id,
+                    task_id: p.task_id,
+                    task_name: p.task_name,
+                    url: p.url,
+                    filename: p.filename,
+                    file_size: p.file_size,
+                    downloaded_bytes: p.downloaded_bytes,
+                    elapsed_secs: p.elapsed_secs,
+                    avg_speed_mbps: p.avg_speed_mbps,
+                    status: p.status,
+                    success_chunks: p.success_chunks,
+                    failed_chunks: p.failed_chunks,
+                    error_msg: p.error_msg,
                 };
                 state
                     .with_transaction(move |conn| {
@@ -375,8 +496,8 @@ async fn handle_client_msg(
             }
         }
 
-        // ── 新协议：Ping 响应（保活） ──
-        ClientMsg::Pong => {
+        // ── Ping 响应（保活） ──
+        EVENT_PONG => {
             if let Some(nid) = node_id {
                 let now = Utc::now();
                 state
@@ -391,94 +512,95 @@ async fn handle_client_msg(
             }
         }
 
-        // ── 旧协议兼容：WS 内注册 ──
-        ClientMsg::Register {
-            node_id,
-            hostname,
-            platform,
-            arch,
-            version,
-        } => {
-            state.ws_mgr.bind_node(conn_id, node_id).await;
-            let now = Utc::now();
-            let host = hostname.clone();
-            state
-                .with_transaction(move |conn| {
-                    let exists: bool = conn
-                        .query_row(
-                            "SELECT COUNT(*) FROM nodes WHERE id = ?1",
-                            params![node_id.to_string()],
-                            |r| r.get::<_, i64>(0),
-                        )
-                        .map(|c| c > 0)
-                        .unwrap_or(false);
-                    if exists {
+        // ── WS 内注册 ──
+        EVENT_COMPONENT_REGISTERED => {
+            if let Ok(p) = msg.parse_payload::<RegisterPayload>() {
+                let reg_node_id = p.node_id;
+                state.ws_mgr.bind_node(conn_id, reg_node_id).await;
+                let now = Utc::now();
+                let host = p.hostname.clone();
+                state
+                    .with_transaction(move |conn| {
+                        let exists: bool = conn
+                            .query_row(
+                                "SELECT COUNT(*) FROM nodes WHERE id = ?1",
+                                params![reg_node_id.to_string()],
+                                |r| r.get::<_, i64>(0),
+                            )
+                            .map(|c| c > 0)
+                            .unwrap_or(false);
+                        if exists {
+                            conn.execute(
+                                "UPDATE nodes SET hostname=?1, platform=?2, arch=?3, version=?4, status=CASE WHEN status='pending' THEN 'pending' ELSE 'online' END, last_seen=?5 WHERE id=?6",
+                                params![p.hostname, p.platform, p.arch, p.version, now.to_rfc3339(), reg_node_id.to_string()],
+                            )?;
+                        } else {
+                            conn.execute(
+                                "INSERT INTO nodes VALUES (?1,?2,?3,?4,?5,'online',?6,?6,'[]',0,0,NULL)",
+                                params![reg_node_id.to_string(), p.hostname, p.platform, p.arch, p.version, now.to_rfc3339()],
+                            )?;
+                        }
+                        Ok(())
+                    })
+                    .await?;
+
+                tracing::info!("[ws] 节点注册 node_id={} hostname={}", reg_node_id, host);
+            }
+        }
+
+        // ── PDC 发现事件（pk 当前不消费，仅记录） ──
+        EVENT_DISCOVERY_STARTED => {
+            if let Ok(ds) = msg.parse_payload::<DiscoveryStartedMsg>() {
+                tracing::debug!(
+                    "[ws] PDC discovery started: task_id={} infohash={}",
+                    ds.task_id,
+                    ds.infohash,
+                );
+            }
+        }
+        EVENT_DISCOVERY_RESULT => {
+            if let Ok(dr) = msg.parse_payload::<DiscoveryResultMsg>() {
+                tracing::debug!(
+                    "[ws] PDC discovery result: task_id={} infohash={} peers={} success={}",
+                    dr.task_id,
+                    dr.infohash,
+                    dr.peers_count,
+                    dr.success,
+                );
+            }
+        }
+
+        // ── 节点心跳 ──
+        EVENT_NODE_HEARTBEAT => {
+            if let Ok(p) = msg.parse_payload::<HeartbeatPayload>() {
+                let hb_node_id = p.node_id;
+                let active_tasks = p.active_tasks;
+                let bytes_downloaded = p.bytes_downloaded as i64;
+                let now = Utc::now();
+                state
+                    .with_transaction(move |conn| {
                         conn.execute(
-                            "UPDATE nodes SET hostname=?1, platform=?2, arch=?3, version=?4, status=CASE WHEN status='pending' THEN 'pending' ELSE 'online' END, last_seen=?5 WHERE id=?6",
-                            params![hostname, platform, arch, version, now.to_rfc3339(), node_id.to_string()],
+                            "UPDATE nodes SET status=CASE WHEN status='pending' THEN 'pending' ELSE 'online' END, last_seen=?1, active_tasks=?2, bytes_downloaded=?3 WHERE id=?4",
+                            params![now.to_rfc3339(), active_tasks as i64, bytes_downloaded, hb_node_id.to_string()],
                         )?;
-                    } else {
-                        conn.execute(
-                            "INSERT INTO nodes VALUES (?1,?2,?3,?4,?5,'online',?6,?6,'[]',0,0,NULL)",
-                            params![node_id.to_string(), hostname, platform, arch, version, now.to_rfc3339()],
-                        )?;
-                    }
-                    Ok(())
-                })
-                .await?;
-
-            tracing::info!(
-                "[ws] 节点注册(旧协议) node_id={} hostname={}",
-                node_id,
-                host
-            );
+                        Ok(())
+                    })
+                    .await?;
+                // 同步更新服务注册中心健康状态
+                let load = if active_tasks > 0 {
+                    (active_tasks as f32 / 4.0).min(1.0)
+                } else {
+                    0.0
+                };
+                state
+                    .service_registry
+                    .update_health(hb_node_id, "healthy", load)
+                    .await;
+            }
         }
 
-        // ── PDC 发现事件（pandanetos 协议扩展，pk 当前不消费，仅记录） ──
-        ClientMsg::DiscoveryStarted(ds) => {
-            tracing::debug!(
-                "[ws] PDC discovery started: task_id={} infohash={}",
-                ds.task_id,
-                ds.infohash,
-            );
-        }
-        ClientMsg::DiscoveryResult(dr) => {
-            tracing::debug!(
-                "[ws] PDC discovery result: task_id={} infohash={} peers={} success={}",
-                dr.task_id,
-                dr.infohash,
-                dr.peers_count,
-                dr.success,
-            );
-        }
-
-        // ── 旧协议兼容：心跳 ──
-        ClientMsg::Heartbeat {
-            node_id,
-            active_tasks,
-            bytes_downloaded,
-        } => {
-            let now = Utc::now();
-            state
-                .with_transaction(move |conn| {
-                    conn.execute(
-                        "UPDATE nodes SET status=CASE WHEN status='pending' THEN 'pending' ELSE 'online' END, last_seen=?1, active_tasks=?2, bytes_downloaded=?3 WHERE id=?4",
-                        params![now.to_rfc3339(), active_tasks, bytes_downloaded, node_id.to_string()],
-                    )?;
-                    Ok(())
-                })
-                .await?;
-            // 同步更新服务注册中心健康状态
-            let load = if active_tasks > 0 {
-                (active_tasks as f32 / 4.0).min(1.0)
-            } else {
-                0.0
-            };
-            state
-                .service_registry
-                .update_health(node_id, "healthy", load)
-                .await;
-        }
+        // 其它事件类型：忽略（pk 不消费的通用事件）
+        _ => {}
     }
     // 任何节点消息都可能导致前端需要更新，标记脏数据，50ms内推送
     state.frontend_ws_mgr.notify_update();

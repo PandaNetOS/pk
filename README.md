@@ -19,30 +19,22 @@ PandaNetOS 生态主控：生成、下发并控制 [SPDE](https://github.com/pan
 
 ### 标准库路径约定
 
-强制依赖 `pandanetos` 共享标准库，使用 **path 依赖**，目录布局固定：
+**生态唯一标准库**：PandaNetOS 生态只允许使用 `pnos`（[pnos-spec](https://github.com/PandaNetOS/pnos-spec)）标准库——**有且只有它**。旧的 `pandanetos` 已废弃，任何项目不得再依赖。
 
-```
-<workspace>/
-├── PandaNetOS/              # 标准库仓库（必须与 pk 同级）
-│   └── crates/pandanetos/
-└── pk/                      # 本仓库
-    └── Cargo.toml           # pandanetos = { path = "../PandaNetOS/crates/pandanetos" }
-```
-
-`Cargo.toml` 中的依赖声明：
+`Cargo.toml` 中的依赖声明（git 依赖，无需同级目录）：
 
 ```toml
 [dependencies]
-pandanetos = { path = "../PandaNetOS/crates/pandanetos" }
+pnos = { git = "https://github.com/PandaNetOS/pnos-spec.git", branch = "main" }
 ```
 
-> 克隆本仓库后，需同时克隆 `PandaNetOS/PandaNetOS` 到同级目录，否则 `cargo build` 会因找不到 path 依赖而失败。
+> 无需把标准库克隆到同级目录：`pnos` 通过 git 依赖自动拉取。
 
 ### 规范要求
 
-- **强制依赖** `pandanetos` 共享库，统一协议路径常量（`protocol::paths`）、响应格式（`ApiResponse`/`ApiError`）、错误码与配置标准，**禁止**维护私有协议与常量。
+- **只允许 `pnos`**：统一协议路径常量（`pnos::protocol`）、响应格式（`pnos::response::ApiResponse`）、错误码（`pnos::error::ErrorCode`）、事件协议（`pnos::events::WsMessage`）与配置标准；**禁止**依赖已废弃的 `pandanetos`，**禁止**维护私有协议与常量。
 - **标准一致性**：API 路径、响应格式、文件布局与文档规范均以 PandaNetOS《标准规范》为准。
-- 一行导入所有常用类型：`use pandanetos::prelude::*;`
+- 一行导入所有常用类型：`use pnos::prelude::*;`
 
 - 节点注册 / 心跳 / 在线状态
 - 下载任务创建与调度（任一节点 / 全部节点 / 指定节点）

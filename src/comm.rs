@@ -158,7 +158,10 @@ async fn apply_event(state: Arc<AppState>, msg: &WsMessage) {
             .unwrap_or_default(),
         health: "healthy".to_string(),
         load: 0.0,
-        region: p.get("region").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        region: p
+            .get("region")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         version: p
             .get("version")
             .and_then(|v| v.as_str())

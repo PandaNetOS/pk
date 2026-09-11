@@ -15,10 +15,9 @@ jobs:
       - name: Checkout 本项目
         uses: actions/checkout@v4
 
-      - name: Checkout PandaNetOS 标准库
+      - name: Checkout PandaNetOS 标准规范仓（合规脚本来源）
         run: |
           git clone --depth 1 https://github.com/PandaNetOS/PandaNetOS.git ../PandaNetOS
-          ln -sf PandaNetOS ../pandanetos 2>/dev/null || true
 
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable

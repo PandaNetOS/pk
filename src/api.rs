@@ -12,101 +12,52 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::Utc;
-use pandanetos::protocol::paths;
+use pnos::error::ErrorCode;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use uuid::Uuid;
 
-// ── 通用响应 ──────────────────────────────────────────────
+// ── 通用响应（统一使用 pnos 标准库）──────────────────────
 
-/// 统一成功响应（对齐 api.md：code=0 成功，data 数据，message 提示）
-#[derive(Serialize)]
-pub struct ApiResponse<T: Serialize> {
-    /// 业务状态码，0 表示成功
-    pub code: i32,
-    /// 响应数据
-    pub data: Option<T>,
-    /// 提示信息
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
+/// 统一 API 响应（来自 pnos 标准库：code=0 成功，data 数据，message 提示）
+pub use pnos::response::ApiResponse;
 
-impl<T: Serialize> ApiResponse<T> {
-    /// 成功响应：{code:0, data, message:"ok"}
-    pub fn ok(data: T) -> Self {
-        Self {
-            code: 0,
-            data: Some(data),
-            message: Some("ok".to_string()),
-        }
-    }
-    /// 成功响应（无数据体）：{code:0, message:"ok"}
-    pub fn ok_empty() -> Self {
-        Self {
-            code: 0,
-            data: None,
-            message: Some("ok".to_string()),
-        }
-    }
-}
-
-/// 统一错误响应（对齐 api.md：错误码 + message + details，HTTP 状态由错误码映射）
-#[derive(Serialize)]
-pub struct ApiErrorResp {
-    /// 错误码（{DOMAIN}_{REASON}）
-    pub code: String,
-    /// 错误信息
+/// 应用错误（携带 pnos 标准错误码）
+pub struct AppError {
+    pub code: ErrorCode,
     pub message: String,
-    /// 错误详情（可选）
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub details: Option<serde_json::Value>,
 }
 
-impl ApiErrorResp {
-    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+impl AppError {
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
-            code: code.into(),
+            code,
             message: message.into(),
-            details: None,
         }
     }
-    pub fn with_details(mut self, details: serde_json::Value) -> Self {
-        self.details = Some(details);
-        self
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let status = StatusCode::from_u16(self.code.http_status())
+            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        (
+            status,
+            Json(ApiResponse::<()>::error_code(self.code, self.message)),
+        )
+            .into_response()
     }
-    /// 根据错误码映射 HTTP 状态码（error-codes.md）
-    pub fn http_status(&self) -> u16 {
-        pandanetos::error::error_code_http_status(self.code.as_str())
+}
+
+impl From<anyhow::Error> for AppError {
+    fn from(e: anyhow::Error) -> Self {
+        Self::new(ErrorCode::InternalError, e.to_string())
     }
 }
 
 pub type ApiResult<T> = Result<Json<ApiResponse<T>>, AppError>;
-
-/// 应用错误（任何错误都携带标准错误码）
-pub struct AppError(ApiErrorResp);
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        let status = self.0.http_status();
-        let status = axum::http::StatusCode::from_u16(status)
-            .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-        (status, Json(self.0)).into_response()
-    }
-}
-impl From<ApiErrorResp> for AppError {
-    fn from(e: ApiErrorResp) -> Self {
-        Self(e)
-    }
-}
-impl From<anyhow::Error> for AppError {
-    fn from(e: anyhow::Error) -> Self {
-        Self(ApiErrorResp::new(
-            pandanetos::error::codes::INTERNAL_ERROR,
-            e.to_string(),
-        ))
-    }
-}
 
 // ── 鉴权中间件 ────────────────────────────────────────────
 
@@ -115,10 +66,7 @@ pub fn check_auth(state: &AppState, token: Option<&str>) -> Result<(), AppError>
         match token {
             Some(t) if t == state.cfg.token => {}
             _ => {
-                return Err(AppError(ApiErrorResp::new(
-                    pandanetos::error::codes::UNAUTHORIZED,
-                    "未授权",
-                )));
+                return Err(AppError::new(ErrorCode::Unauthorized, "未授权"));
             }
         }
     }
@@ -177,7 +125,7 @@ pub async fn list_nodes(State(state): State<Arc<AppState>>) -> ApiResult<Vec<Nod
         }
     }
 
-    Ok(Json(ApiResponse::ok(nodes)))
+    Ok(Json(ApiResponse::success(nodes)))
 }
 
 /// 查询单个节点实时状态
@@ -186,7 +134,7 @@ pub async fn get_node_realtime(
     Path(id): Path<Uuid>,
 ) -> ApiResult<crate::ws::NodeRealtime> {
     let rt = state.ws_mgr.get_node_realtime(id).await.unwrap_or_default();
-    Ok(Json(ApiResponse::ok(rt)))
+    Ok(Json(ApiResponse::success(rt)))
 }
 
 pub async fn delete_node(
@@ -206,12 +154,9 @@ pub async fn delete_node(
         })
         .await?;
     // 主动通知 spde 节点已被删除，使其立即暂停任务并重新注册
-    state
-        .ws_mgr
-        .send_to_node(id, &crate::ws::ServerMsg::NodeDeleted)
-        .await;
+    ws::notify_node_deleted(&state, id).await;
     state.frontend_ws_mgr.notify_update();
-    Ok(Json(ApiResponse::ok(())))
+    Ok(Json(ApiResponse::success(())))
 }
 
 /// 批量清理离线节点（DELETE /api/v1/nodes）
@@ -239,14 +184,11 @@ pub async fn purge_offline_nodes(State(state): State<Arc<AppState>>) -> ApiResul
     // 主动通知所有被删的离线节点（如果还连着的话）
     for nid_str in &offline_ids {
         if let Ok(nid) = uuid::Uuid::parse_str(nid_str) {
-            state
-                .ws_mgr
-                .send_to_node(nid, &crate::ws::ServerMsg::NodeDeleted)
-                .await;
+            ws::notify_node_deleted(&state, nid).await;
         }
     }
     state.frontend_ws_mgr.notify_update();
-    Ok(Json(ApiResponse::ok(deleted)))
+    Ok(Json(ApiResponse::success(deleted)))
 }
 
 // ── 节点能力参数管理 ──────────────────────────────────────
@@ -310,7 +252,7 @@ pub async fn update_node_capabilities(
         })
         .await?;
     state.frontend_ws_mgr.notify_update();
-    Ok(Json(ApiResponse::ok(())))
+    Ok(Json(ApiResponse::success(())))
 }
 
 // ── 节点审批（删除后再次注册需人工同意） ──────────────────
@@ -336,7 +278,7 @@ pub async fn approve_node(
         })
         .await?;
     state.frontend_ws_mgr.notify_update();
-    Ok(Json(ApiResponse::ok(())))
+    Ok(Json(ApiResponse::success(())))
 }
 
 /// 拒绝待审批节点
@@ -367,7 +309,7 @@ pub async fn reject_node(
         })
         .await?;
     state.frontend_ws_mgr.notify_update();
-    Ok(Json(ApiResponse::ok(())))
+    Ok(Json(ApiResponse::success(())))
 }
 
 // ── 任务管理 ──────────────────────────────────────────────
@@ -395,7 +337,7 @@ pub async fn list_tasks(State(state): State<Arc<AppState>>) -> ApiResult<Vec<Tas
             Ok(tasks)
         })
         .await?;
-    Ok(Json(ApiResponse::ok(tasks)))
+    Ok(Json(ApiResponse::success(tasks)))
 }
 
 pub async fn create_task(
@@ -431,7 +373,7 @@ pub async fn create_task(
         })
         .await?;
     state.frontend_ws_mgr.notify_update();
-    Ok(Json(ApiResponse::ok(task)))
+    Ok(Json(ApiResponse::success(task)))
 }
 
 pub async fn update_task(
@@ -480,7 +422,7 @@ pub async fn update_task(
         })
         .await?;
     state.frontend_ws_mgr.notify_update();
-    Ok(Json(ApiResponse::ok(task)))
+    Ok(Json(ApiResponse::success(task)))
 }
 
 pub async fn delete_task(
@@ -495,7 +437,7 @@ pub async fn delete_task(
         })
         .await?;
     state.frontend_ws_mgr.notify_update();
-    Ok(Json(ApiResponse::ok(())))
+    Ok(Json(ApiResponse::success(())))
 }
 
 /// 取消任务（不删除任务记录，仅将 pending/running 状态的 dispatch 标记为 cancelled）
@@ -510,7 +452,7 @@ pub async fn cancel_task_handler(
         })
         .await?;
     state.frontend_ws_mgr.notify_update();
-    Ok(Json(ApiResponse::ok(())))
+    Ok(Json(ApiResponse::success(())))
 }
 
 // ── 运行记录 ──────────────────────────────────────────────
@@ -544,7 +486,7 @@ pub async fn list_runs(
             Ok(runs)
         })
         .await?;
-    Ok(Json(ApiResponse::ok(runs)))
+    Ok(Json(ApiResponse::success(runs)))
 }
 
 fn map_run(r: &rusqlite::Row) -> rusqlite::Result<RunRecord> {
@@ -576,7 +518,7 @@ fn map_run(r: &rusqlite::Row) -> rusqlite::Result<RunRecord> {
 pub async fn get_overview(State(state): State<Arc<AppState>>) -> ApiResult<Overview> {
     state.refresh_online().await;
     let ov = state.with_conn(scheduler::overview).await?;
-    Ok(Json(ApiResponse::ok(ov)))
+    Ok(Json(ApiResponse::success(ov)))
 }
 
 /// 版本信息接口（pcdn-keeper 场景下返回 pk + spde 组合版本）
@@ -595,11 +537,11 @@ pub async fn get_version() -> ApiResult<VersionInfo> {
         spde_version: std::env::var("SPDE_VERSION").ok(),
         pcdn_keeper_version: std::env::var("PCDN_KEEPER_VERSION").ok(),
     };
-    Ok(Json(ApiResponse::ok(info)))
+    Ok(Json(ApiResponse::success(info)))
 }
 
 pub async fn get_defaults(State(state): State<Arc<AppState>>) -> ApiResult<SpdeDefaults> {
-    Ok(Json(ApiResponse::ok(state.cfg.spde_defaults.clone())))
+    Ok(Json(ApiResponse::success(state.cfg.spde_defaults.clone())))
 }
 
 /// 节点拉取 YAML 格式配置（SPDE 节点调用）
@@ -684,7 +626,7 @@ pub async fn agent_register(
         .await?;
 
     state.frontend_ws_mgr.notify_update();
-    Ok(Json(ApiResponse::ok(AgentRegisterResp {
+    Ok(Json(ApiResponse::success(AgentRegisterResp {
         node_id,
         poll_interval_secs: state.cfg.heartbeat_timeout_secs / 2,
         master_listen: state.cfg.listen.clone(),
@@ -730,7 +672,7 @@ pub async fn agent_heartbeat(
         })
         .await?;
     state.frontend_ws_mgr.notify_update();
-    Ok(Json(ApiResponse::ok(())))
+    Ok(Json(ApiResponse::success(())))
 }
 
 pub async fn agent_fetch_config(
@@ -790,7 +732,7 @@ pub async fn agent_fetch_config(
         tasks: vec![],
     };
     state.frontend_ws_mgr.notify_update();
-    Ok(Json(ApiResponse::ok(cfg)))
+    Ok(Json(ApiResponse::success(cfg)))
 }
 
 pub async fn agent_report(
@@ -801,7 +743,7 @@ pub async fn agent_report(
         .with_transaction(|conn| scheduler::apply_report(conn, &req))
         .await?;
     state.frontend_ws_mgr.notify_update();
-    Ok(Json(ApiResponse::ok(rec)))
+    Ok(Json(ApiResponse::success(rec)))
 }
 
 /// 节点从共享待下发池领取一个任务
@@ -824,14 +766,14 @@ pub async fn agent_claim(
                 overrides: node_task.task.overrides,
             };
             state.frontend_ws_mgr.notify_update();
-            (StatusCode::OK, Json(ApiResponse::ok(resp))).into_response()
+            (StatusCode::OK, Json(ApiResponse::success(resp))).into_response()
         }
         Ok(None) => {
             // 池子空，返回 204
-            (StatusCode::NO_CONTENT, Json(ApiResponse::<()>::ok(()))).into_response()
+            (StatusCode::NO_CONTENT, Json(ApiResponse::success(()))).into_response()
         }
         Err(e) => {
-            let resp = ApiErrorResp::new(pandanetos::error::codes::INTERNAL_ERROR, e.to_string());
+            let resp = ApiResponse::<()>::error_code(ErrorCode::InternalError, e.to_string());
             (StatusCode::INTERNAL_SERVER_ERROR, Json(resp)).into_response()
         }
     }
@@ -847,7 +789,7 @@ pub async fn list_workflows(State(state): State<Arc<AppState>>) -> ApiResult<Vec
             Ok(wfs)
         })
         .await?;
-    Ok(Json(ApiResponse::ok(wfs)))
+    Ok(Json(ApiResponse::success(wfs)))
 }
 
 fn map_workflow(r: &rusqlite::Row) -> rusqlite::Result<Workflow> {
@@ -927,7 +869,7 @@ pub async fn create_workflow(
         })
         .await?;
     state.frontend_ws_mgr.notify_update();
-    Ok(Json(ApiResponse::ok(wf)))
+    Ok(Json(ApiResponse::success(wf)))
 }
 
 pub async fn update_workflow(
@@ -968,7 +910,7 @@ pub async fn update_workflow(
         })
         .await?;
     state.frontend_ws_mgr.notify_update();
-    Ok(Json(ApiResponse::ok(wf)))
+    Ok(Json(ApiResponse::success(wf)))
 }
 
 pub async fn delete_workflow(
@@ -989,7 +931,7 @@ pub async fn delete_workflow(
         })
         .await?;
     state.frontend_ws_mgr.notify_update();
-    Ok(Json(ApiResponse::ok(())))
+    Ok(Json(ApiResponse::success(())))
 }
 
 pub async fn get_workflow(
@@ -1005,10 +947,7 @@ pub async fn get_workflow(
         })
         .await?;
     let Some(wf) = wf else {
-        return Err(AppError(ApiErrorResp::new(
-            pandanetos::error::codes::WORKFLOW_NOT_FOUND,
-            "工作流不存在",
-        )));
+        return Err(AppError::new(ErrorCode::WorkflowNotFound, "工作流不存在"));
     };
 
     let runs = state
@@ -1019,7 +958,10 @@ pub async fn get_workflow(
         })
         .await?;
 
-    Ok(Json(ApiResponse::ok(WorkflowDetail { workflow: wf, runs })))
+    Ok(Json(ApiResponse::success(WorkflowDetail {
+        workflow: wf,
+        runs,
+    })))
 }
 
 fn map_workflow_run(r: &rusqlite::Row) -> rusqlite::Result<WorkflowRun> {
@@ -1048,11 +990,8 @@ pub async fn trigger_workflow_handler(
     let run = workflow_scheduler::trigger_workflow(&state, id).await?;
     state.frontend_ws_mgr.notify_update();
     match run {
-        Some(r) => Ok(Json(ApiResponse::ok(r))),
-        None => Err(AppError(ApiErrorResp::new(
-            pandanetos::error::codes::WORKFLOW_NOT_FOUND,
-            "工作流不存在",
-        ))),
+        Some(r) => Ok(Json(ApiResponse::success(r))),
+        None => Err(AppError::new(ErrorCode::WorkflowNotFound, "工作流不存在")),
     }
 }
 
@@ -1064,7 +1003,7 @@ pub async fn list_workflow_runs(State(state): State<Arc<AppState>>) -> ApiResult
             Ok(runs)
         })
         .await?;
-    Ok(Json(ApiResponse::ok(runs)))
+    Ok(Json(ApiResponse::success(runs)))
 }
 
 // ── 下发记录（执行页面） ──────────────────────────────────
@@ -1105,7 +1044,7 @@ pub async fn list_dispatches(State(state): State<Arc<AppState>>) -> ApiResult<Ve
             Ok(dispatches)
         })
         .await?;
-    Ok(Json(ApiResponse::ok(dispatches)))
+    Ok(Json(ApiResponse::success(dispatches)))
 }
 
 // ── 二进制分发 ─────────────────────────────────
@@ -1179,7 +1118,7 @@ pub async fn list_artifacts(
             });
         }
     }
-    Json(ApiResponse::ok(artifacts))
+    Json(ApiResponse::success(artifacts))
 }
 
 pub async fn serve_artifact(
@@ -1213,7 +1152,7 @@ pub async fn serve_artifact(
 
 pub async fn host_info() -> Json<ApiResponse<HostInfo>> {
     let (platform, arch) = detect_host_platform();
-    Json(ApiResponse::ok(HostInfo { platform, arch }))
+    Json(ApiResponse::success(HostInfo { platform, arch }))
 }
 
 // ── 服务注册与发现（Agent 间点对点通信） ─────────────────
@@ -1233,7 +1172,7 @@ pub async fn list_services(
         )
         .await;
     let total = agents.len();
-    Ok(Json(ApiResponse::ok(ServiceQueryResponse {
+    Ok(Json(ApiResponse::success(ServiceQueryResponse {
         agents,
         total,
     })))
@@ -1245,11 +1184,8 @@ pub async fn get_service(
     Path(id): Path<Uuid>,
 ) -> ApiResult<ServiceAgentInfo> {
     match state.service_registry.get(id).await {
-        Some(info) => Ok(Json(ApiResponse::ok(info))),
-        None => Err(AppError(ApiErrorResp::new(
-            pandanetos::error::codes::NOT_FOUND,
-            "服务不存在".to_string(),
-        ))),
+        Some(info) => Ok(Json(ApiResponse::success(info))),
+        None => Err(AppError::new(ErrorCode::NotFound, "服务不存在")),
     }
 }
 
@@ -1308,7 +1244,7 @@ pub async fn register_service(
         ws::notify_service_changed(&state, &event).await;
     }
 
-    Ok(Json(ApiResponse::ok(AgentRegisterResp {
+    Ok(Json(ApiResponse::success(AgentRegisterResp {
         node_id,
         poll_interval_secs: state.cfg.heartbeat_timeout_secs,
         master_listen: state.cfg.listen.clone(),
@@ -1317,6 +1253,12 @@ pub async fn register_service(
 }
 
 // ── 路由 ──────────────────────────────────────────────────
+
+/// 将 `pnos` 标准库的路径常量转成 pk 完整路由：
+/// 补上 `/api/v1` 前缀，并把标准里的 `:id` 占位适配为 axum 0.8 的 `{id}` 语法。
+fn pnos_api(rel: &str) -> String {
+    format!("{}{}", pnos::protocol::API_V1, rel).replace(":id", "{id}")
+}
 
 pub fn router(state: Arc<AppState>) -> axum::Router {
     use axum::routing::{delete, get, post, put};
@@ -1327,17 +1269,28 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/api/v1/defaults", get(get_defaults))
         .route("/api/v1/host-info", get(host_info))
         // 节点
-        .route(paths::NODES, get(list_nodes))
-        .route(paths::NODES_OFFLINE, delete(purge_offline_nodes))
+        .route(&pnos_api(pnos::protocol::NODES), get(list_nodes))
+        // pnos 未定义「清理离线节点」路径，保留 pk 自身端点
+        .route("/api/v1/nodes/offline", delete(purge_offline_nodes))
         .route("/api/v1/nodes/{id}", delete(delete_node))
         .route("/api/v1/nodes/{id}/approve", post(approve_node))
-        .route(paths::NODE_CAPABILITIES, put(update_node_capabilities))
+        // pnos 未定义「节点能力修改」路径，保留 pk 自身端点
+        .route(
+            "/api/v1/nodes/{id}/capabilities",
+            put(update_node_capabilities),
+        )
         .route("/api/v1/nodes/{id}/reject", post(reject_node))
         .route("/api/v1/nodes/{id}/config.yaml", get(get_node_config_yaml))
         .route("/api/v1/nodes/{id}/realtime", get(get_node_realtime))
         // 任务
-        .route(paths::TASKS, get(list_tasks).post(create_task))
-        .route(paths::TASK_DETAIL, put(update_task).delete(delete_task))
+        .route(
+            &pnos_api(pnos::protocol::TASKS),
+            get(list_tasks).post(create_task),
+        )
+        .route(
+            &pnos_api(pnos::protocol::TASK_DETAIL),
+            put(update_task).delete(delete_task),
+        )
         .route("/api/v1/tasks/{id}/cancel", post(cancel_task_handler))
         // 运行记录
         .route("/api/v1/runs", get(list_runs))
@@ -1359,15 +1312,27 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
             post(trigger_workflow_handler),
         )
         .route("/api/v1/workflow-runs", get(list_workflow_runs))
-        // Agent
-        .route(paths::AGENT_REGISTER, post(agent_register))
-        .route(paths::NODE_HEARTBEAT, post(agent_heartbeat))
+        // Agent / 组件（统一走 pnos 标准路径 /components/*）
+        .route(
+            &pnos_api(pnos::protocol::COMPONENTS_REGISTER),
+            post(agent_register),
+        )
+        .route(
+            &pnos_api(pnos::protocol::COMPONENTS_HEARTBEAT),
+            post(agent_heartbeat),
+        )
         .route("/api/v1/agent/config", post(agent_fetch_config))
         .route("/api/v1/agent/report", post(agent_report))
-        .route(paths::DISPATCH_CLAIM, post(agent_claim))
-        // 服务注册与发现
-        .route(paths::AGENTS, get(list_services))
-        .route(paths::AGENT_DETAIL, get(get_service))
+        .route(&pnos_api(pnos::protocol::DISPATCH_CLAIM), post(agent_claim))
+        // 服务注册与发现（统一走 pnos 标准路径 /components）
+        .route(
+            &pnos_api(pnos::protocol::COMPONENTS_LIST),
+            get(list_services),
+        )
+        .route(
+            &pnos_api(pnos::protocol::COMPONENT_DETAIL),
+            get(get_service),
+        )
         .route("/api/v1/services/register", post(register_service))
         // 监控
         .route("/api/v1/metrics", get(pk_metrics))

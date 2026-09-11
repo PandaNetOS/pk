@@ -6,7 +6,6 @@ description = "PK — PandaNetPL 主控，负责生成、下发并控制 SPDE �
 license = "MIT"
 
 [dependencies]
-pandanetos = { path = "../PandaNetOS/crates/pandanetos" }
 pnos = { git = "https://github.com/PandaNetOS/pnos-spec.git", branch = "main" }
 pnos-comm = { git = "https://github.com/PandaNetOS/pnos-sdk.git", branch = "main", package = "pnos-comm" }
 anyhow = "1"

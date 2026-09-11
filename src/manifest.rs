@@ -48,7 +48,7 @@ pub fn build_capability_manifest() -> Value {
                 "WebSocket 实时数据推送（节点状态/任务进度/速度）",
                 "前端实时刷新（50ms 级别）",
                 "节点心跳接收",
-                "节点删除主动通知（WebSocket ServerMsg）",
+                "节点删除主动通知（WebSocket 事件 node.deleted）",
             ],
             "workflow": [
                 "工作流创建/编辑/删除",
@@ -150,7 +150,7 @@ pub fn build_capability_manifest() -> Value {
             "auth": "Bearer Token (可选)",
             "agent_heartbeat_interval": "5s (spde 端默认)",
             "realtime_push": "WebSocket，节点状态/任务进度/速度实时推送",
-            "node_deleted_notification": "WebSocket ServerMsg::NodeDeleted，删除节点时主动通知 spde",
+            "node_deleted_notification": "WebSocket 事件 node.deleted（WsMessage 信封），删除节点时主动通知 spde",
         },
         "node_status_fields": [
             "id (UUID)",
