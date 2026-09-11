@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   release:
-    uses: PandaNetOS/PandaNetOS/.github/workflows/reusable-release-rust-binary.yml@main
+    uses: PandaNetOS/pnos-spec/.github/workflows/reusable-release-rust-binary.yml@main
     with:
       binary_name: pk
       project_name: PK

@@ -15,7 +15,7 @@ PandaNetOS 生态主控：生成、下发并控制 [SPDE](https://github.com/pan
 
 ## 生态标准
 
-本项目属于 **PandaNetOS 生态项目群**，遵循全系统权威标准仓库 [PandaNetOS](https://github.com/PandaNetOS/PandaNetOS) 的规范。
+本项目属于 **PandaNetOS 生态项目群**，遵循全系统权威标准仓库 [pnos-spec](https://github.com/PandaNetOS/pnos-spec) 的规范。
 
 ### 标准库路径约定
 
@@ -33,7 +33,7 @@ pnos = { git = "https://github.com/PandaNetOS/pnos-spec.git", branch = "main" }
 ### 规范要求
 
 - **只允许 `pnos`**：统一协议路径常量（`pnos::protocol`）、响应格式（`pnos::response::ApiResponse`）、错误码（`pnos::error::ErrorCode`）、事件协议（`pnos::events::WsMessage`）与配置标准；**禁止**依赖已废弃的 `pandanetos`，**禁止**维护私有协议与常量。
-- **标准一致性**：API 路径、响应格式、文件布局与文档规范均以 PandaNetOS《标准规范》为准。
+- **标准一致性**：API 路径、响应格式、文件布局与文档规范均以 pnos-spec《标准规范》为准。
 - 一行导入所有常用类型：`use pnos::prelude::*;`
 
 - 节点注册 / 心跳 / 在线状态
@@ -142,7 +142,7 @@ cargo test --all
 ### 合规检查
 
 ```bash
-bash ../PandaNetOS/scripts/check_compliance.sh .
+bash ../pnos-spec/scripts/check_compliance.sh .
 ```
 
 ## 贡献指南

@@ -15,8 +15,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: PandaNetOS Tag Guard
-        uses: PandaNetOS/PandaNetOS/actions/tag-guard@main
+      - name: pnos Tag Guard
+        uses: PandaNetOS/pnos-spec/actions/tag-guard@main
         with:
           cargo-toml-path: Cargo.toml
           delete-on-failure: true
