@@ -22,3 +22,31 @@ jobs:
       version: ${{ inputs.version }}
     secrets:
       PAT_FOR_DOWNSTREAM: ${{ secrets.PAT_FOR_PCDNKEEPER }}
+
+  # 发版后即时通知 pnos-store 同步清单里的版本号（尽力而为：
+  # token 缺失或无权限都不应让发版失败；pnos-store 的每日 cron 会兜底）。
+  notify-store:
+    needs: release
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: 触发 pnos-store 版本同步
+        env:
+          TOKEN: ${{ secrets.PAT_FOR_PCDNKEEPER }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "未配置 PAT_FOR_PCDNKEEPER，跳过；pnos-store 每日 cron 会自动兜底同步"
+            exit 0
+          fi
+          code=$(curl -sS -o /tmp/resp.txt -w '%{http_code}' -X POST \
+            -H "Authorization: token $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            "https://api.github.com/repos/PandaNetOS/pnos-store/dispatches" \
+            -d "{\"event_type\":\"store-sync\",\"client_payload\":{\"app\":\"pk\",\"version\":\"${VERSION}\"}}")
+          echo "dispatch http=${code}"
+          cat /tmp/resp.txt 2>/dev/null || true
+          if [ "$code" != "204" ]; then
+            echo "::warning::触发商店版本同步失败（HTTP ${code}）；pnos-store 每日 cron 会兜底"
+          fi
