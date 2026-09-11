@@ -7,6 +7,8 @@ license = "MIT"
 
 [dependencies]
 pandanetos = { path = "../PandaNetOS/crates/pandanetos" }
+pnos = { git = "https://github.com/PandaNetOS/pnos-spec.git", branch = "main" }
+pnos-comm = { git = "https://github.com/PandaNetOS/pnos-sdk.git", branch = "main", package = "pnos-comm" }
 anyhow = "1"
 axum = { version = "0.8", features = ["json", "macros", "ws"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -24,7 +26,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1.10", features = ["v4", "serde"] }
+uuid = { version = "1.10", features = ["v4", "v5", "serde"] }
 
 [[bin]]
 name = "pk"
@@ -35,3 +37,9 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
+
+# 本地开发：用本地修复版 pnos-comm 覆盖 git 源
+# （修复 heartbeat/unregister 误用 config.app_id 导致 runtime 找不到组件、组件被标 offline 的 bug）
+# 上游 pnos-sdk 合入该修复后，可删除本段恢复纯 git 依赖
+[patch."https://github.com/PandaNetOS/pnos-sdk.git"]
+pnos-comm = { path = "../pnos-sdk/crates/pnos-comm" }

@@ -1,4 +1,5 @@
 pub mod api;
+pub mod comm;
 pub mod config;
 pub mod manifest;
 pub mod metrics;

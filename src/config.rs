@@ -13,6 +13,15 @@ pub struct PkConfig {
     pub heartbeat_timeout_secs: u64,
     #[serde(default)]
     pub token: String,
+    /// pnos-runtime 地址（通信 SDK 注册/发现/事件用）。为空时用 SDK 默认 http://127.0.0.1:8080
+    #[serde(default)]
+    pub runtime_url: Option<String>,
+    /// 注册 pnos-runtime 的最长等待秒数；超时则 pk 以独立模式运行（优雅降级）
+    #[serde(default = "default_register_timeout")]
+    pub register_timeout_secs: u64,
+    /// 区域标识（可选，写入组件注册信息）
+    #[serde(default)]
+    pub region: Option<String>,
     #[serde(default)]
     pub spde_defaults: SpdeDefaults,
 }
@@ -65,6 +74,9 @@ impl Default for PkConfig {
             data_dir: None,
             heartbeat_timeout_secs: default_heartbeat_timeout(),
             token: String::new(),
+            runtime_url: None,
+            register_timeout_secs: default_register_timeout(),
+            region: None,
             spde_defaults: SpdeDefaults::default(),
         }
     }
@@ -75,6 +87,9 @@ fn default_listen() -> String {
 }
 fn default_heartbeat_timeout() -> u64 {
     45
+}
+fn default_register_timeout() -> u64 {
+    10
 }
 fn default_true() -> bool {
     true
@@ -101,6 +116,9 @@ listen: "0.0.0.0:5566"
 data_dir: null
 heartbeat_timeout_secs: 45
 token: ""
+runtime_url: null
+register_timeout_secs: 10
+region: null
 spde_defaults:
   max_concurrent: 4
   resume: true

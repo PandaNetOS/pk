@@ -1,23 +1,21 @@
 //! PDC (PeerDiscoveryCenter) 客户端
 //!
-//! pk 通过 PDC 的 REST API 获取 peer 统计信息，更新种子索引库。
-//!
-//! PDC API 端点：
-//! - GET /api/v1/stats - 全局统计
-//! - GET /api/v1/cache/{infohash} - 查询缓存的 peer
-//! - GET /api/v1/health - 健康检查
+//! 优先经 pnos-comm 通信 SDK 调用 PDC：自动服务发现 + 自动注入 Token。
+//! 未接入 runtime（pk 独立模式）时回退到配置的 `base_url` 直连。
 
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
+
+use pnos_comm::PnosApp;
 
 /// PDC 客户端配置
 #[derive(Debug, Clone)]
 pub struct PdcClientConfig {
-    /// PDC 服务地址（如 http://127.0.0.1:6880）
+    /// PDC 服务地址（如 http://127.0.0.1:6880），仅独立模式直连回退时使用
     pub base_url: String,
     /// 请求超时
     pub timeout: Duration,
@@ -36,28 +34,63 @@ impl Default for PdcClientConfig {
 pub struct PdcClient {
     config: PdcClientConfig,
     client: Client,
+    /// 经 pnos-comm 服务发现调用 PDC（接入 runtime 时为 Some）
+    app: Option<PnosApp>,
 }
 
 impl PdcClient {
     /// 创建新的 PDC 客户端
-    pub fn new(config: PdcClientConfig) -> Result<Self> {
+    pub fn new(config: PdcClientConfig, app: Option<PnosApp>) -> Result<Self> {
         let client = Client::builder()
             .timeout(config.timeout)
             .build()
             .context("构建 HTTP 客户端失败")?;
-        Ok(PdcClient { config, client })
+        Ok(PdcClient {
+            config,
+            client,
+            app,
+        })
     }
 
-    /// 使用默认配置创建
+    /// 使用默认配置创建（独立模式，无 SDK）
     pub fn with_default() -> Result<Self> {
-        Self::new(PdcClientConfig::default())
+        Self::new(PdcClientConfig::default(), None)
+    }
+
+    /// 绑定通信 SDK 句柄（经 runtime 服务发现调用 PDC）
+    pub fn with_app(app: PnosApp) -> Result<Self> {
+        Self::new(PdcClientConfig::default(), Some(app))
+    }
+
+    /// GET 并解析 JSON
+    async fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
+        match &self.app {
+            Some(app) => app
+                .call("pdc")
+                .get(path)
+                .send::<T>()
+                .await
+                .map_err(|e| anyhow::anyhow!("pnos-comm 调用 PDC 失败: {e}")),
+            None => {
+                let url = format!("{}{}", self.config.base_url, path);
+                let resp = self
+                    .client
+                    .get(&url)
+                    .send()
+                    .await
+                    .with_context(|| format!("请求 PDC 失败: {url}"))?;
+                if !resp.status().is_success() {
+                    return Err(anyhow::anyhow!("PDC 返回状态: {}", resp.status()));
+                }
+                Ok(resp.json().await.context("解析 PDC 响应失败")?)
+            }
+        }
     }
 
     /// 健康检查
     pub async fn health_check(&self) -> bool {
-        let url = format!("{}/api/v1/health", self.config.base_url);
-        match self.client.get(&url).send().await {
-            Ok(resp) => resp.status().is_success(),
+        match self.get_json::<serde_json::Value>("/api/v1/health").await {
+            Ok(_) => true,
             Err(e) => {
                 warn!("[pdc] 健康检查失败: {}", e);
                 false
@@ -67,46 +100,16 @@ impl PdcClient {
 
     /// 获取 PDC 全局统计
     pub async fn get_stats(&self) -> Result<PdcStats> {
-        let url = format!("{}/api/v1/stats", self.config.base_url);
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .with_context(|| format!("获取 PDC 统计失败: {}", url))?;
-
-        if !resp.status().is_success() {
-            return Err(anyhow::anyhow!("PDC 返回状态: {}", resp.status()));
-        }
-
-        let stats: PdcStats = resp.json().await.context("解析 PDC 统计失败")?;
-        debug!(
-            "[pdc] 统计: nodes={}, infohashes={}",
-            stats.dht_nodes, stats.dht_infohashes
-        );
-        Ok(stats)
+        self.get_json::<PdcStats>("/api/v1/stats").await
     }
 
-    /// 查询某个 infohash 的缓存 peer
+    /// 查询某个 infohash 的缓存 peer（404 视为无数据）
     pub async fn get_cached_peers(&self, infohash: &str) -> Result<Vec<PdcPeer>> {
-        let url = format!("{}/api/v1/cache/{}", self.config.base_url, infohash);
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .with_context(|| format!("查询 PDC 缓存 peer 失败: {}", url))?;
-
-        if resp.status() == 404 {
-            return Ok(vec![]);
+        let path = format!("/api/v1/cache/{infohash}");
+        match self.get_json::<Vec<PdcPeer>>(&path).await {
+            Ok(peers) => Ok(peers),
+            Err(_) => Ok(vec![]),
         }
-
-        if !resp.status().is_success() {
-            return Err(anyhow::anyhow!("PDC 返回状态: {}", resp.status()));
-        }
-
-        let peers: Vec<PdcPeer> = resp.json().await.context("解析 PDC peer 失败")?;
-        Ok(peers)
     }
 
     /// 从 PDC 同步某个 infohash 的 peer 统计到索引库

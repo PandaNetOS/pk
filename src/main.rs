@@ -1,8 +1,9 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use pk::{api, manifest, web, workflow_scheduler, ws, AppState, PkConfig};
+use pk::{api, comm, manifest, web, workflow_scheduler, ws, AppState, PkConfig};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -64,6 +65,11 @@ async fn run_serve(config: Option<PathBuf>, listen: Option<String>) -> Result<()
     tracing::info!("work root {:?}", work_root);
     tracing::info!("data dir  {:?}", state.data_dir);
 
+    // 接入 pnos-comm 通信 SDK：注册到 pnos-runtime（runtime 不可达时优雅降级）
+    if let Some(app) = comm::init_comm(&cfg, state.clone()).await {
+        *state.pk_app.write().await = Some(app);
+    }
+
     // 启动工作流后台调度器
     workflow_scheduler::start(state.clone()).await;
     // 启动前端 WebSocket 实时状态广播（每秒推送一次）
@@ -81,12 +87,18 @@ async fn run_serve(config: Option<PathBuf>, listen: Option<String>) -> Result<()
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown())
+    .with_graceful_shutdown(shutdown(state.clone()))
     .await?;
     Ok(())
 }
 
-async fn shutdown() {
+async fn shutdown(state: Arc<AppState>) {
+    // 先等待终止信号；收到后才注销 pk 并关闭与 pnos-runtime 的连接。
+    // 注意：axum 的 with_graceful_shutdown 会在启动时就轮询该 future，
+    // 若把 app.shutdown() 放在前面，会导致 pk 一注册就立刻注销。
     let _ = tokio::signal::ctrl_c().await;
     tracing::info!("shutdown signal");
+    if let Some(app) = &*state.pk_app.read().await {
+        app.shutdown().await;
+    }
 }

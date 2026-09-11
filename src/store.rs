@@ -20,6 +20,8 @@ pub struct AppState {
     pub frontend_ws_mgr: FrontendWsManager,
     pub conn: Mutex<Connection>,
     pub torrent_index: Arc<TorrentIndexDb>,
+    /// 通信 SDK 句柄（pnos-comm 注册到 pnos-runtime 后填充；runtime 不可达时为 None）
+    pub pk_app: tokio::sync::RwLock<Option<pnos_comm::PnosApp>>,
 }
 
 impl AppState {
@@ -113,6 +115,7 @@ impl AppState {
             frontend_ws_mgr: FrontendWsManager::new(),
             conn: Mutex::new(conn),
             torrent_index,
+            pk_app: tokio::sync::RwLock::new(None),
         }))
     }
 
