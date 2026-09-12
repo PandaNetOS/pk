@@ -10,3 +10,7 @@ pk-data
 # 调试输出文件
 check_output*.txt
 *.log
+
+# pk serve 运行时生成的配置（勿提交）
+dev-config.yaml
+smoke-config.yaml
