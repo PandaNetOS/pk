@@ -25,6 +25,35 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
 const API_BASE = "";
+
+// ==================== 嵌入 / 主题适配（独立窗口 vs pnos-web iframe） ====================
+(function initEmbedAndTheme() {
+  const params = new URLSearchParams(location.search);
+  const embed = params.get("embed") === "1";
+  const applyTheme = (t) => { if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t); };
+  const urlTheme = params.get("theme");
+  if (urlTheme) {
+    applyTheme(urlTheme);
+  } else if (embed) {
+    applyTheme("light"); // 内嵌无 theme 参数时兜底浅色（pnos-web 通常带 ?theme=）
+  } else {
+    // 独立窗口：跟随系统深浅色
+    const mq = matchMedia("(prefers-color-scheme: dark)");
+    applyTheme(mq.matches ? "dark" : "light");
+    mq.addEventListener("change", (e) => applyTheme(e.matches ? "dark" : "light"));
+  }
+  if (embed) {
+    document.documentElement.classList.add("embed");
+    // 把侧边栏导航移到顶部横向 tab（移动节点保留事件监听，switchView 仍按 .nav 高亮）
+    const railNav = document.querySelector(".rail nav");
+    const topNav = document.querySelector(".top-nav");
+    if (railNav && topNav) topNav.appendChild(railNav);
+    // 接收 pnos-web 推送的主题
+    window.addEventListener("message", (e) => {
+      if (e.data && e.data.type === "pnos-theme") applyTheme(e.data.theme);
+    });
+  }
+})();
 const MAX_RENDER_ITEMS = 200; // P3-22 列表最大渲染条数
 const EMA_ALPHA = 0.3; // P0-4 速度滑动平均系数
 

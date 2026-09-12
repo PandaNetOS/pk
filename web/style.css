@@ -1,7 +1,7 @@
 /* ============================================================
    PK 主控台 · 视觉对齐 pnos-web 首页（飞牛 / Apple 风）
    配色全部复用 pnos-web 的 --pnos-* token；
-   浅色为默认，@media (prefers-color-scheme: dark) 跟随系统深色。
+   浅色为默认；深色由 html[data-theme="dark"] 驱动（独立窗口跟随系统，内嵌 iframe 时由 pnos-web 经 postMessage 推送）。
    结构与类名保持原样，仅替换取色与圆角/阴影。
    ============================================================ */
 
@@ -29,8 +29,9 @@
   --pnos-rail: 220px;
 }
 
-/* 跟随系统深色（与 pnos-web [data-theme="dark"] 同款 token） */
-@media (prefers-color-scheme: dark) {
+/* 深色 token：由 html[data-theme="dark"] 驱动
+   独立窗口跟随系统设置；内嵌时由 pnos-web 经 postMessage 推送 theme（与 pnos-web 同款 token） */
+html[data-theme="dark"] {
   :root {
     --pnos-bg: #141519;
     --pnos-surface: #1e2026;
@@ -310,3 +311,33 @@ fieldset legend {
   color: var(--pnos-muted);
   font-size: 13px;
 }
+
+/* ── 内嵌模式（pnos-web iframe 加载，?embed=1）── */
+/* 隐藏侧边栏，导航收进顶部横向 tab，只留 main 内容区，融入应用壳 */
+.top-nav { display: none; }
+html.embed .rail { display: none; }
+html.embed .top-nav {
+  display: flex;
+  gap: 4px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--pnos-border);
+  background: var(--pnos-surface);
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+html.embed .top-nav .nav {
+  border: none;
+  background: transparent;
+  color: var(--pnos-muted);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+html.embed .top-nav .nav.on {
+  background: var(--pnos-primary-soft);
+  color: var(--pnos-primary);
+  font-weight: 600;
+}
+html.embed main { padding-top: 0; }
