@@ -30,26 +30,26 @@
 }
 
 /* 深色 token：由 html[data-theme="dark"] 驱动
-   独立窗口跟随系统设置；内嵌时由 pnos-web 经 postMessage 推送 theme（与 pnos-web 同款 token） */
+   独立窗口跟随系统设置；内嵌时由 pnos-web 经 postMessage 推送 theme（与 pnos-web 同款 token）
+   注意：必须直接给 html 元素覆写变量——写成 html[data-theme="dark"] { :root {...} } 会被 CSS 嵌套规则
+   解释成后代选择器（= html[data-theme="dark"] :root），:root 自己不可能成为后代，导致深色 token 全部失效。 */
 html[data-theme="dark"] {
-  :root {
-    --pnos-bg: #141519;
-    --pnos-surface: #1e2026;
-    --pnos-surface-soft: #262830;
-    --pnos-border: #2f323b;
-    --pnos-text: #e8e9ec;
-    --pnos-muted: #8b8f98;
-    --pnos-subtle: #636770;
-    --pnos-primary: #5a94f7;
-    --pnos-primary-soft: #1c2e4a;
-    --pnos-success: #34b97e;
-    --pnos-success-soft: #163024;
-    --pnos-warning: #e5a03a;
-    --pnos-warning-soft: #332818;
-    --pnos-danger: #e86565;
-    --pnos-danger-soft: #3a1f1f;
-    --pnos-shadow: 0 1px 3px rgba(0, 0, 0, .3);
-  }
+  --pnos-bg: #141519;
+  --pnos-surface: #1e2026;
+  --pnos-surface-soft: #262830;
+  --pnos-border: #2f323b;
+  --pnos-text: #e8e9ec;
+  --pnos-muted: #8b8f98;
+  --pnos-subtle: #636770;
+  --pnos-primary: #5a94f7;
+  --pnos-primary-soft: #1c2e4a;
+  --pnos-success: #34b97e;
+  --pnos-success-soft: #163024;
+  --pnos-warning: #e5a03a;
+  --pnos-warning-soft: #332818;
+  --pnos-danger: #e86565;
+  --pnos-danger-soft: #3a1f1f;
+  --pnos-shadow: 0 1px 3px rgba(0, 0, 0, .3);
 }
 
 * { box-sizing: border-box; }
@@ -171,10 +171,16 @@ code { font-family: ui-monospace, Consolas, monospace; }
 .actions { display: flex; gap: 6px; }
 .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--pnos-muted); }
 
+/* 窄屏（预览面板 / 分屏）：独立窗口仍保留「左侧竖栏」形态，只把侧栏收窄——
+   刻意不把侧栏搬到顶部，避免窄窗口下独立窗口与内嵌（顶部横向 tab）长得一样。 */
 @media (max-width: 980px) {
   .kpis, .split, .grid3 { grid-template-columns: 1fr; }
-  body { flex-direction: column; }
-  .rail { width: 100%; flex: none; }
+  :root { --pnos-rail: 168px; }
+  .rail { padding: 16px 12px; }
+  .brand { margin-bottom: 18px; }
+  .brand small { display: none; }
+  .nav { padding: 9px 10px; }
+  main { padding: 20px 18px 40px; }
 }
 
 /* ── 工作流 / 调度页 ── */
@@ -325,6 +331,13 @@ html.embed .top-nav {
   flex-shrink: 0;
   overflow-x: auto;
 }
+/* 关键：app.js 把 .rail nav 整个搬进来，nav 自带 flex-direction:column，这里必须拉平为横向 */
+html.embed .top-nav > nav {
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: nowrap;
+}
 html.embed .top-nav .nav {
   border: none;
   background: transparent;
@@ -334,6 +347,8 @@ html.embed .top-nav .nav {
   font-size: 13px;
   cursor: pointer;
   white-space: nowrap;
+  flex: 0 0 auto;
+  text-align: center;
 }
 html.embed .top-nav .nav.on {
   background: var(--pnos-primary-soft);
