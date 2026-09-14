@@ -1,44 +1,24 @@
-# =============================================================================
-# PandaNetOS 生态合规检查 CI
-# =============================================================================
-name: PandaNetOS Compliance
+name: Compliance Check
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
 
 jobs:
   compliance:
-    name: Compliance Check
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
-      - name: Checkout 本项目
+      - uses: actions/checkout@v4
+
+      - name: Checkout pandanetos-meta
         uses: actions/checkout@v4
-
-      - name: Checkout pnos 标准库仓（合规脚本来源）
-        run: |
-          git clone --depth 1 https://github.com/PandaNetOS/pnos-spec.git ../pnos-spec
-
-      - name: 安装 Rust 工具链
-        uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          repository: PandaNetOS/pandanetos-meta
+          path: pandanetos-meta
+          token: ${{ secrets.PANDANETOS_META_PAT }}
 
-      - name: 缓存 cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-
-      - name: 运行 pnos 生态合规检查
-        run: bash ../pnos-spec/scripts/check_compliance.sh .
-
-      - name: 上传检查日志（失败时）
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: compliance-log
-          path: |
-            **/Cargo.toml
-            README.md
-          retention-days: 7
+      - name: Run compliance check
+        shell: pwsh
+        run: .\pandanetos-meta\check-compliance.ps1
